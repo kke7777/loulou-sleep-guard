@@ -76,6 +76,7 @@ public final class GuardAccessibilityService extends AccessibilityService {
         api = new GuardApiClient(preferences);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         GuardNotification.createChannels(this);
+        GuardKeepAliveService.ensureRunning(this);
         registerScreenReceiver();
         restoreGuardPage();
         main.removeCallbacks(poll);
@@ -277,7 +278,6 @@ public final class GuardAccessibilityService extends AccessibilityService {
     }
 
     private void addOverlay(View card) {
-
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
