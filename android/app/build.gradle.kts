@@ -15,6 +15,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            resValue("string", "app_name", "再不去睡露露就要生气啦（测试版）")
+        }
         release {
             val keystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
             if (keystorePath != null) {
