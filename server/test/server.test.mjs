@@ -234,3 +234,55 @@ test("OAuth DCR and PKCE authorize an official-client MCP session", async () => 
     await close(context.server);
   }
 });
+
+test("Android approval renders a recoverable ChatGPT callback button", async () => {
+  const context = await fixture();
+  try {
+    const redirectUri = "https://chatgpt.com/plugin/oauth/callback";
+    let response = await fetch(`${context.url}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "ChatGPT Android",
+        redirect_uris: [redirectUri],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    const client = await response.json();
+
+    const challenge = createHash("sha256").update("v".repeat(64)).digest("base64url");
+    const authorize = new URL(`${context.url}/oauth/authorize`);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("client_id", client.client_id);
+    authorize.searchParams.set("redirect_uri", redirectUri);
+    authorize.searchParams.set("scope", "sleep_guard:write");
+    authorize.searchParams.set("state", "android-state");
+    authorize.searchParams.set("code_challenge", challenge);
+    authorize.searchParams.set("code_challenge_method", "S256");
+    response = await fetch(authorize);
+    const page = await response.text();
+    const requestId = page.match(/name="id" value="([^"]+)"/)?.[1];
+    assert.ok(requestId);
+
+    response = await fetch(`${context.url}/oauth/approve`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "user-agent": "Mozilla/5.0 (Linux; Android 15) Chrome/128 Mobile",
+      },
+      body: new URLSearchParams({ id: requestId, approval_code: context.config.ownerApprovalCode }),
+    });
+    assert.equal(response.status, 200);
+    const completion = await response.text();
+    assert.match(completion, /返回 ChatGPT 完成连接/);
+    const escapedCallback = completion.match(/href="([^"]+)"/)?.[1];
+    assert.ok(escapedCallback);
+    const callback = new URL(escapedCallback.replaceAll("&amp;", "&"));
+    assert.equal(callback.origin + callback.pathname, redirectUri);
+    assert.equal(callback.searchParams.get("state"), "android-state");
+    assert.ok(callback.searchParams.get("code"));
+  } finally {
+    await close(context.server);
+  }
+});
