@@ -187,7 +187,12 @@ export class OAuthService {
       callback.searchParams.set("state", authRequest.state);
       destination = String(callback);
     });
-    if (destination) return redirect(response, destination);
+    if (destination) {
+      const userAgent = String(request.headers["user-agent"] ?? "");
+      if (!/Android/i.test(userAgent)) return redirect(response, destination);
+
+      return html(response, 200, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>授权成功</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#29314d,#0c101a 65%);color:#f8f8ff;font-family:system-ui,-apple-system,sans-serif}.card{width:min(90vw,430px);padding:32px;border:1px solid #ffffff24;border-radius:28px;background:#ffffff10;box-shadow:0 28px 90px #0008}.mark{font-size:42px}.muted{color:#c5cbdb;line-height:1.6}.button{display:block;width:100%;margin-top:20px;padding:14px;border-radius:14px;background:#8ba7ff;color:#10182c;text-align:center;text-decoration:none;font-size:16px;font-weight:700}</style></head><body><main class="card"><div class="mark">✅</div><h1>授权成功</h1><p class="muted">口令已经验证。现在点下面的按钮回到 ChatGPT，完成最后的连接。</p><a class="button" href="${escapeHtml(destination)}">返回 ChatGPT 完成连接</a><p class="muted">只点一次这个按钮，不要返回上一页重复提交口令。</p></main></body></html>`);
+    }
     return html(response, 403, `<!doctype html><meta charset="utf-8"><title>授权失败</title><p>${escapeHtml(failure)}</p>`);
   }
 
