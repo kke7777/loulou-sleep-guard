@@ -17,6 +17,23 @@ jobs:
       RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Package source snapshot
+        id: source_package
+        shell: bash
+        run: |
+          version="$(node -p "require('./server/package.json').version")"
+          mkdir -p dist
+          git archive --format=zip --output="dist/loulou-sleep-guard-v${version}-source.zip" HEAD
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: loulou-sleep-guard-v${{ steps.source_package.outputs.version }}-source
+          path: dist/loulou-sleep-guard-v${{ steps.source_package.outputs.version }}-source.zip
+          if-no-files-found: error
+
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
