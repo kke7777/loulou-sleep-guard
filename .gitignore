@@ -1,0 +1,29 @@
+server/data/
+artifacts/
+dist/
+dist-private/
+manual-build/
+release-stage/
+
+# Keep every local environment file private while allowing shareable templates.
+.env
+.env.*
+*.env
+*.env.*
+.envrc
+!.env.example
+!*.env.example
+
+android/.gradle/
+android/local.properties
+android/**/build/
+
+# Signing material and locally built packages must never enter Git history.
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+*.pfx
+*.apk
+*.aab

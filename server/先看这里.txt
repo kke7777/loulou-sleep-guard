@@ -1,0 +1,13 @@
+再不去睡露露就要生气啦 · 服务器端 v1.0.0
+
+服务器会直接从 GitHub 下载本仓库，不需要用安卓手机上传压缩包。
+
+进入本仓库的 server 目录后，填写 HTTPS 地址（没有自有域名时可使用 sslip.io），再依次运行：
+
+  npm run setup
+  pm2 start pm2.config.cjs
+  pm2 save
+
+setup 会询问 HTTPS 地址，自动生成 .env 和随机密钥；请妥善保存它显示的“手机连接令牌”和“网页授权口令”，不要公开截图。
+
+Nginx 和 HTTPS 证书需要根据实际域名配置。到这一步时，把域名告诉 Codex，它会继续逐步带你完成。

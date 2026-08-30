@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">再不去睡露露就要生气啦</string>
+    <string name="accessibility_label">再不去睡露露就要生气啦</string>
+    <string name="accessibility_description">识别宝贝主动选择的娱乐应用，在露露陪你睡觉时显示温柔提醒并记录次数。不会读取输入内容。</string>
+    <string name="device_admin_label">允许露露陪宝贝熄屏</string>
+    <string name="device_admin_description">点“好嘛，露露抱我睡”时，允许露露替宝贝熄灭屏幕。</string>
+</resources>

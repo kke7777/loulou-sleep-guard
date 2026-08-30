@@ -1,0 +1,9 @@
+{
+  "name": "loulou-sleep-guard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm --prefix server test",
+    "start": "npm --prefix server start"
+  }
+}
