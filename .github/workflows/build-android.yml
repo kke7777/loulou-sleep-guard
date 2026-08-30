@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "android/**"
+      - "server/**"
       - ".github/workflows/build-android.yml"
 
 jobs:
@@ -14,6 +15,12 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Test sleep guard server
+        run: node --test
+        working-directory: server
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
