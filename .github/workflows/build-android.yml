@@ -21,6 +21,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
+      - name: Compile Android sources without signing
+        run: gradle -p android :app:assembleDebug
       - name: Restore fixed release signing key
         shell: bash
         env:
