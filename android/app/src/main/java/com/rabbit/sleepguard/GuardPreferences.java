@@ -19,6 +19,7 @@ public final class GuardPreferences {
     private static final String UNLOCKS_REVOKED = "unlocks_revoked";
     private static final String ENDS_AT = "ends_at";
     private static final String LAST_SYNC = "last_sync";
+    private static final String KEEPALIVE_HEARTBEAT = "keepalive_heartbeat";
     private static final String GUARD_PAGE_VISIBLE = "guard_page_visible";
     private static final String GUARDED_APP_NAME = "guarded_app_name";
 
@@ -90,6 +91,19 @@ public final class GuardPreferences {
 
     public long lastSync() {
         return preferences.getLong(LAST_SYNC, 0L);
+    }
+
+    public void markKeepAliveHeartbeat() {
+        preferences.edit().putLong(KEEPALIVE_HEARTBEAT, System.currentTimeMillis()).apply();
+    }
+
+    public long keepAliveHeartbeat() {
+        return preferences.getLong(KEEPALIVE_HEARTBEAT, 0L);
+    }
+
+    public boolean keepAliveRecent() {
+        long heartbeat = keepAliveHeartbeat();
+        return heartbeat > 0L && System.currentTimeMillis() - heartbeat < 45_000L;
     }
 
     public boolean guardPageVisible() {

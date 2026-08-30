@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "android/**"
+      - "server/**"
       - ".github/workflows/build-android.yml"
 
 jobs:
@@ -12,8 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Test sleep guard server
+        run: node --test
+        working-directory: server
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -21,22 +30,39 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
-      - name: Restore fixed release signing key
+      - name: Compile Android sources without signing
+        run: gradle -p android :app:assembleDebug
+      - name: Package debug test APK
+        id: debug_package
         shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/loulou-sleep-guard-release.jks"
+          version="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
+          test -n "$version"
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/loulou-sleep-guard-v${version}-debug-test.apk"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Upload debug test APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: loulou-sleep-guard-v${{ steps.debug_package.outputs.version }}-debug-test
+          path: dist/loulou-sleep-guard-v${{ steps.debug_package.outputs.version }}-debug-test.apk
+          if-no-files-found: error
+      - name: Restore fixed release signing key
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/loulou-sleep-guard-release.jks"
           chmod 600 "$RUNNER_TEMP/loulou-sleep-guard-release.jks"
       - name: Build signed release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/loulou-sleep-guard-release.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle -p android :app:assembleRelease
-      - name: Give APK a versioned filename
+      - name: Give release APK a versioned filename
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
         id: package
         shell: bash
         run: |
@@ -44,11 +70,11 @@ jobs:
           version_code="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' android/app/build.gradle.kts | head -n 1)"
           test -n "$version"
           test -n "$version_code"
-          mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk "dist/loulou-sleep-guard-v${version}.apk"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
       - name: Verify package, version, and fixed signature
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
         shell: bash
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/loulou-sleep-guard-release.jks
@@ -70,7 +96,8 @@ jobs:
           test -n "$actual_digest"
           printf 'APK certificate SHA-256: %s\n' "$actual_digest"
           test "$actual_digest" = "$expected_digest"
-      - name: Upload installable APK
+      - name: Upload installable release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: loulou-sleep-guard-v${{ steps.package.outputs.version }}
