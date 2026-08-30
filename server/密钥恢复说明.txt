@@ -1,0 +1,23 @@
+露露睡眠守卫 · 密钥恢复说明（不要把真实密钥提交到 GitHub）
+
+真实运行密钥保存在 VPS 的：
+/home/admin/loulou-sleep-guard/server/.env
+
+以后忘记服务器地址、手机连接令牌、MCP 控制令牌或网页授权口令时，登录服务器黑屏终端，执行：
+
+cd /home/admin/loulou-sleep-guard/server
+
+grep '^PUBLIC_BASE_URL=' .env
+grep '^ANDROID_DEVICE_TOKEN=' .env
+grep '^CODEX_CONTROL_TOKEN=' .env
+grep '^OWNER_APPROVAL_CODE=' .env
+
+如需一次查看这四项：
+grep -E '^(PUBLIC_BASE_URL|ANDROID_DEVICE_TOKEN|CODEX_CONTROL_TOKEN|OWNER_APPROVAL_CODE)=' .env
+
+注意：
+1. 真实 .env 已被 .gitignore 排除，git pull 不会覆盖或删除它。
+2. 不要把上述命令输出的真实令牌截图发到公开聊天、GitHub issue、README 或源码包里。
+3. 修改 Android / Server / MCP 代码一般不需要重新生成这些令牌；只要 VPS 的 .env 还在，就继续沿用原值。
+4. 如果整台 VPS 被重装、/home/admin/loulou-sleep-guard/server/.env 被删除，才需要重新生成令牌并同步修改手机和 MCP 配置。
+5. 新窗口接手项目时，先读本文件，再按需让用户在 VPS 上自行查看对应值；无需用户凭记忆复述。
