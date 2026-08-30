@@ -186,23 +186,45 @@ export class GuardService {
   constructor(store, config) {
     this.store = store;
     this.config = config;
+    this.listeners = new Set();
+  }
+
+  subscribe(listener) {
+    if (typeof listener !== "function") return () => {};
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  publish(state) {
+    const snapshot = publicState(state);
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(snapshot);
+      } catch {
+        this.listeners.delete(listener);
+      }
+    }
   }
 
   async status() {
-    return this.store.withLock(async () => {
+    let expiredState = null;
+    const state = await this.store.withLock(async () => {
       const now = new Date();
       const current = await this.store.readState(emptyState(now.toISOString()));
       if (current.active && current.ends_at && Date.parse(current.ends_at) <= now.getTime()) {
         const expired = { ...current, active: false, updated_at: now.toISOString() };
         await this.store.writeState(expired);
+        expiredState = expired;
         return expired;
       }
       return current;
     });
+    if (expiredState) this.publish(expiredState);
+    return state;
   }
 
   async event(payload, source = "unknown") {
-    return this.store.withLock(async () => {
+    const result = await this.store.withLock(async () => {
       const receivedAt = new Date().toISOString();
       const previous = await this.store.readState(emptyState(receivedAt));
       const transition = applyGuardEvent(previous, payload, receivedAt, this.config);
@@ -227,6 +249,8 @@ export class GuardService {
       await this.store.appendEvent(event);
       return { ok: true, ...transition, event_id: event.id, received_at: receivedAt };
     });
+    if (result.ok) this.publish(result.state);
+    return result;
   }
 }
 
