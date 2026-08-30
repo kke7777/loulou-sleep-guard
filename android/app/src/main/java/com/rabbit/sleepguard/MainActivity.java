@@ -50,6 +50,7 @@ public final class MainActivity extends Activity {
         preferences = new GuardPreferences(this);
         api = new GuardApiClient(preferences);
         GuardNotification.createChannels(this);
+        GuardKeepAliveService.ensureRunning(this);
         requestNotificationPermission();
         setContentView(buildContent());
         refreshStatus();
@@ -59,12 +60,14 @@ public final class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        GuardKeepAliveService.ensureRunning(this);
         refreshStatus();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        GuardKeepAliveService.ensureRunning(this);
         if (status != null) refreshStatus();
     }
 
@@ -121,7 +124,7 @@ public final class MainActivity extends Activity {
         admin.setOnClickListener(view -> requestDeviceAdmin());
         root.addView(admin, matchWrap());
 
-        Button background = button("打开应用后台设置（vivo 建议设置）");
+        Button background = button("打开应用后台与电池设置（荣耀 / MagicOS 建议允许后台运行）");
         background.setOnClickListener(view -> {
             Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
             startActivity(intent);
@@ -156,7 +159,7 @@ public final class MainActivity extends Activity {
         actions.addView(stop, weightedWithStartMargin());
         root.addView(actions, matchWrap());
 
-        TextView footer = text("正式使用时无需打开本页面。无障碍服务会定时同步服务器状态；打开受限应用时还会立即确认。离线时沿用最近一次有效状态。", 13, Color.rgb(106, 114, 137));
+        TextView footer = text("正式使用时无需打开本页面。后台守卫会维持远程状态通道，无障碍服务负责识别受限应用；打开受限应用时仍会立即向服务器确认。离线时沿用最近一次有效状态。", 13, Color.rgb(106, 114, 137));
         footer.setPadding(0, dp(18), 0, 0);
         root.addView(footer);
         return scroll;
@@ -200,11 +203,13 @@ public final class MainActivity extends Activity {
             return;
         }
         preferences.saveConnection(url, token);
+        GuardKeepAliveService.ensureRunning(this);
         status.setText("正在连接服务器…");
         api.status(result -> runOnUiThread(() -> {
             if (result.requestOk) {
+                GuardKeepAliveService.ensureRunning(this);
                 renderStatus(result);
-                toast("连接成功");
+                toast("连接成功，后台守卫已叫醒");
             } else {
                 status.setText("连接失败：" + result.error);
                 status.setBackgroundColor(Color.rgb(174, 65, 72));
@@ -223,25 +228,31 @@ public final class MainActivity extends Activity {
     private void renderCachedStatus() {
         boolean active = preferences.cachedActive();
         String service = accessibilityEnabled() ? "无障碍已开启" : "无障碍未开启";
+        String keeper = preferences.keepAliveRecent() ? "后台守卫在线" : "后台守卫等待恢复";
+        String sync = formatLastSync(preferences.lastSync());
         String summary = active
                 ? "露露正在陪宝贝 · 接回来 " + preferences.attempts() + " 次"
                 : "露露现在没有守着手机";
-        status.setText(summary + "\n" + service);
+        status.setText(summary + "\n" + service + " · " + keeper + (sync.isEmpty() ? "" : " · 最近同步 " + sync));
         status.setBackgroundColor(active ? Color.rgb(71, 122, 96) : Color.rgb(99, 120, 200));
     }
 
     private void renderStatus(GuardApiClient.Result result) {
         String service = accessibilityEnabled() ? "无障碍已开启" : "无障碍未开启";
+        String keeper = preferences.keepAliveRecent() ? "后台守卫在线" : "后台守卫正在启动";
+        String sync = formatLastSync(preferences.lastSync());
         String end = formatEnd(result.endsAt);
         if (result.active) {
             String unlock = result.unlocksRevoked
                     ? " · 今晚已经商量三次"
                     : " · 和露露商量 " + result.unlockRequestCount + " 次";
             status.setText("露露正在陪宝贝 · 接回来 " + result.attempts + " 次" + unlock
-                    + (end.isEmpty() ? "" : " · 陪到 " + end) + "\n" + service);
+                    + (end.isEmpty() ? "" : " · 陪到 " + end) + "\n" + service + " · " + keeper
+                    + (sync.isEmpty() ? "" : " · 最近同步 " + sync));
             status.setBackgroundColor(Color.rgb(71, 122, 96));
         } else {
-            status.setText("露露现在没有守着手机\n" + service);
+            status.setText("露露现在没有守着手机\n" + service + " · " + keeper
+                    + (sync.isEmpty() ? "" : " · 最近同步 " + sync));
             status.setBackgroundColor(Color.rgb(99, 120, 200));
         }
     }
@@ -290,6 +301,17 @@ public final class MainActivity extends Activity {
             return DateTimeFormatter.ofPattern("MM-dd HH:mm")
                     .withZone(ZoneId.systemDefault())
                     .format(Instant.parse(value));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private String formatLastSync(long value) {
+        if (value <= 0L) return "";
+        try {
+            return DateTimeFormatter.ofPattern("HH:mm:ss")
+                    .withZone(ZoneId.systemDefault())
+                    .format(Instant.ofEpochMilli(value));
         } catch (Exception ignored) {
             return "";
         }
