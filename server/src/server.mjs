@@ -18,7 +18,7 @@ export async function createSleepGuardServer(config) {
     const url = new URL(request.url, config.publicBaseUrl);
     try {
       if (request.method === "GET" && url.pathname === "/health") {
-        return json(response, 200, { ok: true, service: "loulou-sleep-guard", version: "1.0.0" });
+        return json(response, 200, { ok: true, service: "loulou-sleep-guard", version: "1.0.1" });
       }
       if (["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(url.pathname)) {
         return oauth.protectedResource(response);
@@ -35,6 +35,44 @@ export async function createSleepGuardServer(config) {
 
       if (url.pathname.startsWith("/api/device/")) {
         if (!sameSecret(bearer(request), config.androidDeviceToken)) return json(response, 401, { ok: false, error: "unauthorized" });
+
+        if (request.method === "GET" && url.pathname === "/api/device/stream") {
+          response.writeHead(200, {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          });
+          response.flushHeaders?.();
+          response.write("retry: 3000\n\n");
+
+          const writeState = (state) => {
+            if (response.destroyed || response.writableEnded) return;
+            response.write(`event: state\ndata: ${JSON.stringify(state)}\n\n`);
+          };
+          const unsubscribe = guard.subscribe(writeState);
+          writeState(publicState(await guard.status()));
+
+          const heartbeat = setInterval(() => {
+            if (!response.destroyed && !response.writableEnded) {
+              response.write(`: keepalive ${Date.now()}\n\n`);
+            }
+          }, 15_000);
+          heartbeat.unref?.();
+
+          let closed = false;
+          const cleanup = () => {
+            if (closed) return;
+            closed = true;
+            clearInterval(heartbeat);
+            unsubscribe();
+            if (!response.writableEnded) response.end();
+          };
+          request.on("close", cleanup);
+          response.on("close", cleanup);
+          return;
+        }
+
         if (request.method === "GET" && url.pathname === "/api/device/status") {
           return json(response, 200, { ok: true, ...publicState(await guard.status()) });
         }
