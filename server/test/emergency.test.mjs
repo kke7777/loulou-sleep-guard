@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GuardService, publicState } from '../src/guard-state.mjs';
+import { JsonStore } from '../src/json-store.mjs';
+const config = { autoStartHour: 0, autoStartMinute: 20, wakeHour: 6, wakeMinute: 30, utcOffsetMinutes: 480 };
+test('emergency reason survives journal failure; retries yield exactly one record', async () => {
+  const store = new JsonStore(await mkdtemp(join(tmpdir(), 'guard-emergency-')));
+  await store.init();
+  const guard = new GuardService(store, config);
+  const started = await guard.event({ event: 'sleep_guard_started' });
+  const payload = { event: 'emergency_guard_ended', reason: '工作电话', session_id: started.state.session_id,
+    request_id: 'offline-emergency-1', occurred_at: new Date().toISOString(), original_ends_at: started.state.ends_at };
+  const append = store.appendEventOnce.bind(store);
+  store.appendEventOnce = async () => { throw Error('simulated journal failure'); };
+  await assert.rejects(guard.event(payload));
+  assert.equal((await store.readState()).active, false);
+  assert.equal((await store.readState()).log_outbox.reason, '工作电话');
+  store.appendEventOnce = append;
+  const restarted = new GuardService(store, config);
+  await restarted.event(payload);
+  await restarted.event(payload);
+  const rows = (await readFile(store.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(rows.filter(row => row.id === payload.request_id).length, 1);
+  assert.equal(rows.find(row => row.id === payload.request_id).reason, '工作电话');
+  assert.equal(JSON.stringify(publicState(await restarted.status())).includes('工作电话'), false);
+});
+test('repeated blocked event request is idempotent and stale session events are ignored', async () => {
+  const store = new JsonStore(await mkdtemp(join(tmpdir(), 'guard-visit-')));
+  await store.init();
+  const guard = new GuardService(store, config);
+  const first = await guard.event({ event: 'sleep_guard_started' });
+  const event = { event: 'blocked_app_opened', session_id: first.state.session_id, request_id: 'visit-1' };
+  await guard.event(event);
+  assert.equal((await guard.event(event)).state.attempts, 1);
+  await guard.event({ event: 'sleep_guard_ended' });
+  await guard.event({ event: 'sleep_guard_started' });
+  const stale = await guard.event({ ...event, request_id: 'visit-2' });
+  assert.equal(stale.state.attempts, 0);
+  assert.equal(stale.ignored, true);
+});

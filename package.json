@@ -5,5 +5,6 @@
   "scripts": {
     "test": "npm --prefix server test",
     "start": "npm --prefix server start"
-  }
+  },
+  "version": "1.1.0"
 }

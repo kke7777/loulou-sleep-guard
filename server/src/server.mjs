@@ -18,7 +18,7 @@ export async function createSleepGuardServer(config) {
     const url = new URL(request.url, config.publicBaseUrl);
     try {
       if (request.method === "GET" && url.pathname === "/health") {
-        return json(response, 200, { ok: true, service: "loulou-sleep-guard", version: "1.0.1" });
+        return json(response, 200, { ok: true, service: "loulou-sleep-guard", version: "1.1.0" });
       }
       if (["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(url.pathname)) {
         return oauth.protectedResource(response);
@@ -116,6 +116,17 @@ export async function createSleepGuardServer(config) {
       response.end();
     }
   });
+  let ticking = false;
+  const tick = async () => {
+    if (ticking) return;
+    ticking = true;
+    try { await guard.status(); } catch (error) { console.error("Guard clock failed:", error.message); }
+    finally { ticking = false; }
+  };
+  const clock = setInterval(tick, 1000);
+  clock.unref?.();
+  server.on("close", () => clearInterval(clock));
+  await tick();
   return { server, guard, oauth, store };
 }
 

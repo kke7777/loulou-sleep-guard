@@ -46,6 +46,19 @@ export class JsonStore {
     return this.#atomicWrite(this.authPath, value);
   }
 
+  async appendEventOnce(value) {
+    let existing = "";
+    try { existing = await readFile(this.eventsPath, "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const lines = existing.split("\n");
+    if (lines.some(line => { try { return JSON.parse(line).id === value.id; } catch { return false; } })) return;
+    // Recover a partially written final line before appending after a crash.
+    if (existing && !existing.endsWith("\n")) {
+      await writeFile(this.eventsPath, existing.slice(0, existing.lastIndexOf("\n") + 1), { mode: 0o600 });
+    }
+    await this.appendEvent(value);
+  }
+
   async appendEvent(value) {
     await mkdir(dirname(this.eventsPath), { recursive: true, mode: 0o700 });
     await appendFile(this.eventsPath, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });

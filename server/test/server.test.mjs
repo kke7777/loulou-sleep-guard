@@ -71,8 +71,8 @@ test("device and server control APIs share one state", async () => {
       });
     }
     const revoked = await response.json();
-    assert.equal(revoked.attempts, 3);
-    assert.equal(revoked.stage, "refused_sleep");
+    assert.equal(revoked.attempts, 1);
+    assert.equal(revoked.stage, "temporary_unlock");
     assert.equal(revoked.unlocks_revoked, false);
 
     for (let request = 2; request <= 3; request += 1) {
@@ -83,16 +83,16 @@ test("device and server control APIs share one state", async () => {
       });
     }
     const thirdRequest = await response.json();
-    assert.equal(thirdRequest.unlock_request_count, 3);
-    assert.equal(thirdRequest.unlocks_revoked, true);
+    assert.equal(thirdRequest.unlock_request_count, 1);
+    assert.equal(thirdRequest.unlocks_revoked, false);
 
     response = await fetch(`${context.url}/api/control/status`, {
       headers: { authorization: `Bearer ${context.config.codexControlToken}` },
     });
     const status = await response.json();
-    assert.equal(status.attempts, 3);
-    assert.equal(status.unlock_request_count, 3);
-    assert.equal(status.unlocks_revoked, true);
+    assert.equal(status.attempts, 1);
+    assert.equal(status.unlock_request_count, 1);
+    assert.equal(status.unlocks_revoked, false);
   } finally {
     await close(context.server);
   }

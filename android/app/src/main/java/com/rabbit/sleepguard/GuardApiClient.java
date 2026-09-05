@@ -79,6 +79,7 @@ public final class GuardApiClient {
         JSONObject body = new JSONObject();
         try {
             body.put("event", "temporary_unlock_requested");
+            body.put("session_id", preferences.sessionId());
             body.put("app_name", appName);
             body.put("source", "android_accessibility");
             body.put("request_id", java.util.UUID.randomUUID().toString());
@@ -99,12 +100,22 @@ public final class GuardApiClient {
         request("POST", "/api/device/event", body, callback);
     }
 
+    public void syncPending(Callback callback) {
+        request("GET", "/api/device/status", null, callback);
+    }
+
     private void request(String method, String path, JSONObject body, Callback callback) {
         NETWORK.execute(() -> {
             Result result;
             if (!preferences.configured()) {
                 result = new Result(false, false, false, 0, 0, false, "inactive", "", "请先填写 HTTPS 服务器地址和设备令牌");
             } else {
+                JSONObject pending;
+                while ((pending = preferences.pendingEvent()) != null) {
+                    Result sent = execute("POST", "/api/device/event", pending);
+                    if (!sent.requestOk) break;
+                    preferences.acknowledge(pending.optString("request_id"));
+                }
                 result = execute(method, path, body);
             }
             callback.complete(result);
@@ -146,7 +157,22 @@ public final class GuardApiClient {
             String stage = json.optString("stage", active ? "armed" : "inactive");
             String endsAt = json.optString("ends_at", "");
             boolean ignored = json.optBoolean("ignored", false);
-            if (ok) preferences.updateState(active, attempts, unlockRequestCount, unlocksRevoked, endsAt);
+            if (ok && json.optInt("protocol_version", 0) < 2) {
+                ok = false;
+                json.put("error", "请先将服务器更新到1.1.0，再使用新版守卫");
+            }
+            if (ok) preferences.applySnapshot(json);
+            if (body != null && "temporary_unlock_requested".equals(body.optString("event"))
+                    && (json.optInt("protocol_version", 0) < 2 || !preferences.cachedActive()
+                        || preferences.temporaryUntil() <= System.currentTimeMillis())) {
+                ok = false;
+                json.put("error", "暂未获得临时放行，请检查连接及服务器版本");
+            }
+            active = preferences.cachedActive();
+            attempts = preferences.attempts();
+            unlockRequestCount = preferences.unlockRequestCount();
+            unlocksRevoked = preferences.unlocksRevoked();
+            endsAt = preferences.endsAt();
             return new Result(ok, active, ignored, attempts, unlockRequestCount, unlocksRevoked,
                     stage, endsAt, ok ? "" : json.optString("error", "HTTP " + code));
         } catch (Exception error) {

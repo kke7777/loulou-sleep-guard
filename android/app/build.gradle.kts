@@ -10,8 +10,8 @@ android {
         applicationId = "com.rabbit.sleepguard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 101
-        versionName = "1.0.1-loulou"
+        versionCode = 110
+        versionName = "1.1.0-loulou"
     }
 
     buildTypes {
@@ -35,6 +35,8 @@ android {
         }
     }
 
+    testOptions { unitTests.isIncludeAndroidResources = true }
+
     buildFeatures {
         buildConfig = true
     }
@@ -43,4 +45,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }

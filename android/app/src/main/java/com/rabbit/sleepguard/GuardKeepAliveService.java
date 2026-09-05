@@ -50,6 +50,8 @@ public final class GuardKeepAliveService extends Service {
         @Override
         public void run() {
             if (preferences != null) {
+                preferences.clock();
+                GuardScheduleReceiver.schedule(GuardKeepAliveService.this);
                 preferences.markKeepAliveHeartbeat();
                 GuardNotification.updateKeepAlive(
                         GuardKeepAliveService.this,
@@ -91,6 +93,8 @@ public final class GuardKeepAliveService extends Service {
                 GuardNotification.KEEPALIVE_ID,
                 GuardNotification.keepAliveNotification(this, preferences.cachedActive(), preferences.attempts())
         );
+        preferences.clock();
+        GuardScheduleReceiver.schedule(this);
         main.post(heartbeat);
         main.post(poll);
         startEventStream();
@@ -155,12 +159,11 @@ public final class GuardKeepAliveService extends Service {
     private void applyStreamState(String jsonText) {
         try {
             JSONObject json = new JSONObject(jsonText);
-            boolean active = json.optBoolean("active", false);
-            int attempts = json.optInt("attempts", 0);
-            int unlockRequestCount = json.optInt("unlock_request_count", 0);
-            boolean unlocksRevoked = json.optBoolean("unlocks_revoked", false);
-            String endsAt = json.optString("ends_at", "");
-            preferences.updateState(active, attempts, unlockRequestCount, unlocksRevoked, endsAt);
+            preferences.applySnapshot(json);
+            preferences.clock();
+            GuardScheduleReceiver.schedule(this);
+            boolean active = preferences.cachedActive();
+            int attempts = preferences.attempts();
             preferences.markKeepAliveHeartbeat();
             main.post(() -> GuardNotification.updateKeepAlive(
                     GuardKeepAliveService.this,

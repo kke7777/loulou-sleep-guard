@@ -47,6 +47,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
+      - name: Test Android offline state and guard transitions
+        run: gradle -p android :app:testDebugUnitTest
       - name: Compile Android sources without signing
         run: gradle -p android :app:assembleDebug
       - name: Package debug test APK

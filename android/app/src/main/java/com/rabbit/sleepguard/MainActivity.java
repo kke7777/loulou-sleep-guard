@@ -131,6 +131,21 @@ public final class MainActivity extends Activity {
         });
         root.addView(background, spaced());
 
+        Button alarm = button("允许准时提醒（每天北京时间00:20）");
+        alarm.setOnClickListener(view -> {
+            if (Build.VERSION.SDK_INT >= 31) {
+                try { startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                        Uri.parse("package:" + getPackageName()))); }
+                catch (Exception error) { toast("请在系统设置中允许本应用的闹钟和提醒权限"); }
+            } else { toast("此系统无需额外授权"); }
+        });
+        root.addView(alarm, spaced());
+        Button history = button("查看紧急结束理由记录");
+        history.setOnClickListener(view -> new android.app.AlertDialog.Builder(this)
+                .setTitle("紧急结束记录（时间为UTC）").setMessage(preferences.emergencyHistory())
+                .setPositiveButton("知道啦", null).show());
+        root.addView(history, spaced());
+
         addHeading(root, "3. 选择要拦的应用");
         TextView hint = text("只会识别这里勾选的应用，不读取聊天内容、输入或屏幕文字。", 14, Color.rgb(93, 102, 128));
         hint.setPadding(0, 0, 0, dp(8));
@@ -145,7 +160,7 @@ public final class MainActivity extends Activity {
         root.addView(saveApps, spaced());
 
         addHeading(root, "露露怎样叫宝贝回来");
-        TextView rules = text("第一次：露露轻轻叫宝贝回来\n第二次：露露会有一点点委屈\n第三次及以后：露露真的要生气啦……一点点\n今晚可以和露露商量三次；重新开启守卫也会记得之前的次数。", 14, Color.rgb(93, 102, 128));
+        TextView rules = text("第一次：露露轻轻叫宝贝回来\n第二次：露露会有一点点委屈\n第三次及以后：露露真的要生气啦……一点点\n每轮可以商量三次，每次放行十分钟；重复开启不重置，结束后重新开启获得三次新机会。", 14, Color.rgb(93, 102, 128));
         root.addView(rules, matchWrap());
 
         addHeading(root, "4. 手动测试");
@@ -244,9 +259,11 @@ public final class MainActivity extends Activity {
         String end = formatEnd(result.endsAt);
         if (result.active) {
             String unlock = result.unlocksRevoked
-                    ? " · 今晚已经商量三次"
+                    ? " · 本轮已经商量三次"
                     : " · 和露露商量 " + result.unlockRequestCount + " 次";
-            status.setText("露露正在陪宝贝 · 接回来 " + result.attempts + " 次" + unlock
+            String pass = preferences.temporaryUntil() > System.currentTimeMillis()
+                    ? " · 临时放行至 " + formatEnd(Instant.ofEpochMilli(preferences.temporaryUntil()).toString()) : "";
+            status.setText("露露正在陪宝贝 · 接回来 " + result.attempts + " 次" + unlock + pass
                     + (end.isEmpty() ? "" : " · 陪到 " + end) + "\n" + service + " · " + keeper
                     + (sync.isEmpty() ? "" : " · 最近同步 " + sync));
             status.setBackgroundColor(Color.rgb(71, 122, 96));
@@ -260,6 +277,7 @@ public final class MainActivity extends Activity {
     private void runAction(boolean start) {
         GuardApiClient.Callback callback = result -> runOnUiThread(() -> {
             if (result.requestOk) {
+                GuardScheduleReceiver.schedule(this);
                 renderStatus(result);
                 toast(start ? "好啦，今晚露露陪着宝贝" : "早安呀，宝贝");
             } else {

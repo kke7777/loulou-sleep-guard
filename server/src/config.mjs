@@ -27,7 +27,8 @@ export function loadConfig(overrides = {}) {
     ownerApprovalCode: requiredSecret("OWNER_APPROVAL_CODE"),
     wakeHour: integer("WAKE_HOUR", 6, 0, 23),
     wakeMinute: integer("WAKE_MINUTE", 30, 0, 59),
-    autoStartHour: integer("AUTO_START_HOUR", 1, 0, 23),
+    autoStartHour: integer("AUTO_START_HOUR", 0, 0, 23),
+    autoStartMinute: integer("AUTO_START_MINUTE", 20, 0, 59),
     utcOffsetMinutes: integer("UTC_OFFSET_MINUTES", 480, -720, 840),
     accessTokenTtlDays: integer("ACCESS_TOKEN_TTL_DAYS", 90, 1, 365),
   };

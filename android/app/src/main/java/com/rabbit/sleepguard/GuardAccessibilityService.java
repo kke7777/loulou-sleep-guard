@@ -1,236 +1,231 @@
 package com.rabbit.sleepguard;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.KeyguardManager;
 import android.app.admin.DevicePolicyManager;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.IntentFilter;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.content.Intent;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
-
-import java.util.Set;
+import android.widget.Toast;
+import android.text.InputFilter;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 
 public final class GuardAccessibilityService extends AccessibilityService {
-    private static final long POLL_INTERVAL_MS = 300_000L;
-    private static final long EVENT_DEBOUNCE_MS = 2_500L;
-
     private final Handler main = new Handler(Looper.getMainLooper());
     private GuardPreferences preferences;
     private GuardApiClient api;
     private WindowManager windowManager;
     private View overlay;
-    private String lastPackage = "";
-    private long lastHandledAt = 0L;
-    private boolean screenLockRequestedByUser = false;
-    private boolean screenReceiverRegistered = false;
-
-    private final Runnable lockAfterReturningHome = this::lockScreenIfRequested;
-
-    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
-                main.post(GuardAccessibilityService.this::restoreGuardPage);
-            }
+    private TextView clockText;
+    private String overlayPackage = "";
+    private String overlayState = "";
+    private boolean editingReason;
+    private long returningHomeUntil;
+    private SharedPreferences observed;
+    private final SharedPreferences.OnSharedPreferenceChangeListener changes = (p, key) -> {
+        if (!"counted_visit".equals(key) && !"keepalive_heartbeat".equals(key) && !"last_sync".equals(key)) {
+            main.post(this::reconcile);
+        }
+    };
+    private final Runnable check = this::reconcile;
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            preferences.clock();
+            reconcile();
+            main.postDelayed(this, 500L);
+        }
+    };
+    private final Runnable screenOff = () -> {
+        if (!preferences.blocking() || !foregroundPackage().equals(homePackage())) return;
+        DevicePolicyManager policy = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        ComponentName admin = new ComponentName(this, GuardDeviceAdminReceiver.class);
+        if (preferences.lockScreen() && policy != null && policy.isAdminActive(admin)) {
+            try { policy.lockNow(); } catch (SecurityException ignored) { }
         }
     };
 
-    private final Runnable poll = new Runnable() {
-        @Override
-        public void run() {
-            if (api != null && preferences.configured()) {
-                api.status(result -> main.post(() -> {
-                    if (result.requestOk && result.active) {
-                        GuardNotification.showActive(GuardAccessibilityService.this, result.attempts);
-                        restoreGuardPage();
-                    } else if (result.requestOk) {
-                        GuardNotification.hideActive(GuardAccessibilityService.this);
-                        dismissGuardPage();
-                    }
-                }));
-            }
-            main.postDelayed(this, POLL_INTERVAL_MS);
-        }
-    };
-
-    @Override
-    protected void onServiceConnected() {
+    @Override protected void onServiceConnected() {
         super.onServiceConnected();
         preferences = new GuardPreferences(this);
         api = new GuardApiClient(preferences);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        observed = getSharedPreferences("rabbit_sleep_guard", MODE_PRIVATE);
+        observed.registerOnSharedPreferenceChangeListener(changes);
         GuardNotification.createChannels(this);
         GuardKeepAliveService.ensureRunning(this);
-        registerScreenReceiver();
-        restoreGuardPage();
-        main.removeCallbacks(poll);
-        main.post(poll);
+        preferences.clock();
+        main.removeCallbacks(tick);
+        main.post(tick);
+        api.status(result -> main.post(check));
     }
 
-    @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event == null || event.getPackageName() == null || preferences == null) return;
-        int type = event.getEventType();
-        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return;
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (preferences == null) return;
+        // Window events are wake-ups only; never count their package directly (IME/system/overlay).
+        main.removeCallbacks(check);
+        main.post(check);
+    }
 
-        String packageName = event.getPackageName().toString();
-        if (packageName.equals(getPackageName()) || packageName.startsWith("com.android.systemui")) return;
-        Set<String> blocked = preferences.blockedPackages();
-        if (!blocked.contains(packageName)) return;
-        if (overlay != null) return;
-
+    private boolean unlockedScreen() {
+        PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+        KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        return power != null && power.isInteractive() && keyguard != null && !keyguard.isKeyguardLocked();
+    }
+    private String homePackage() {
+        android.content.Intent home = new android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_HOME);
+        android.content.pm.ResolveInfo info = getPackageManager().resolveActivity(home, 0);
+        return info == null ? "" : info.activityInfo.packageName;
+    }
+    private String foregroundPackage() {
+        // Only inspect window type/focus/layer and root package. Never inspect text, children or input.
+        String selected = "";
+        int topLayer = Integer.MIN_VALUE;
+        for (AccessibilityWindowInfo window : getWindows()) {
+            if (window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) continue;
+            AccessibilityNodeInfo root = window.getRoot();
+            if (root == null) continue;
+            CharSequence pkg = root.getPackageName();
+            String name = pkg == null ? "" : pkg.toString();
+            root.recycle();
+            if (window.isFocused()) return name;
+            if (window.getLayer() > topLayer) { selected = name; topLayer = window.getLayer(); }
+        }
+        return selected;
+    }
+    private void reconcile() {
+        if (preferences == null) return;
+        if (!unlockedScreen()) { removeOverlay(); return; }
+        String current = foregroundPackage();
+        boolean target = !current.isEmpty() && !current.equals(getPackageName())
+                && !current.equals(homePackage()) && preferences.blockedPackages().contains(current);
+        if (!target) {
+            removeOverlay();
+            if (!current.isEmpty() && !current.startsWith("com.android.systemui")) preferences.leaveApp();
+            return;
+        }
+        if (!preferences.blocking() || System.currentTimeMillis() < returningHomeUntil) {
+            removeOverlay(); return;
+        }
+        if (preferences.newVisit(current) != null) {
+            api.syncPending(result -> main.post(check));
+            GuardNotification.caught(this, appLabel(current), preferences.attempts());
+        }
+        String state = preferences.sessionId() + "|" + preferences.attempts() + "|" + preferences.unlockRequestCount();
+        if (overlay == null || !current.equals(overlayPackage) || (!editingReason && !state.equals(overlayState))) {
+            showGuard(current, state);
+        }
+        updateClock();
+    }
+    private String appLabel(String pkg) {
+        try { return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
+        catch (Exception error) { return pkg; }
+    }
+    private void addButton(LinearLayout card, String label, Runnable action) {
+        Button button = actionButton(label, Color.rgb(90, 65, 155), Color.WHITE);
+        button.setOnClickListener(view -> action.run());
+        card.addView(button, matchWrap());
+    }
+    private void showGuard(String pkg, String state) {
+        removeOverlay();
+        overlayPackage = pkg; overlayState = state;
+        LinearLayout card = baseCard();
+        card.addView(title("宝贝，回来休息一下吧"));
+        card.addView(body("露露正在守着「" + appLabel(pkg) + "」\n已拦截 " + preferences.attempts()
+                + " 次 · 剩余商量 " + Math.max(0, 3 - preferences.unlockRequestCount()) + " 次"));
+        clockText = body(""); card.addView(clockText);
+        addButton(card, "好嘛，露露抱我睡", () -> {
+            goHome();
+            main.removeCallbacks(screenOff);
+            main.postDelayed(screenOff, 450L);
+        });
+        if (!preferences.unlocksRevoked()) {
+            Button pass = actionButton("和露露商量 · 放行十分钟", Color.rgb(90, 65, 155), Color.WHITE);
+            pass.setOnClickListener(view -> {
+                pass.setEnabled(false);
+                api.requestTemporaryUnlock(appLabel(pkg), result -> main.post(() -> {
+                    pass.setEnabled(true);
+                    if (result.requestOk && preferences.temporaryUntil() > System.currentTimeMillis()) removeOverlay();
+                    else Toast.makeText(this, result.error, Toast.LENGTH_LONG).show();
+                    reconcile();
+                }));
+            });
+            card.addView(pass, matchWrap());
+        }
+        addButton(card, "回到桌面 · 使用其他应用", this::goHome);
+        addButton(card, "有急事，填写理由并结束", () -> showEmergency(pkg, state));
+        card.addView(body("仅限制选中的应用 · v" + BuildConfig.VERSION_NAME));
+        addOverlay(card);
+        updateClock();
+    }
+    private void showEmergency(String pkg, String state) {
+        removeOverlay();
+        overlayPackage = pkg; overlayState = state; editingReason = true;
+        final String session = preferences.sessionId();
+        LinearLayout card = baseCard();
+        card.addView(title("宝贝为什么需要提前结束呢？"));
+        card.addView(body("写下理由就能结束，断网也会先保存在手机，联网后补传。"));
+        EditText reason = new EditText(this);
+        reason.setTextColor(Color.WHITE); reason.setHintTextColor(Color.LTGRAY);
+        reason.setHint("请输入理由（最多200字）"); reason.setMinLines(2);
+        reason.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        reason.setFilters(new InputFilter[]{new InputFilter.LengthFilter(200)});
+        card.addView(reason, matchWrap());
+        addButton(card, "记录理由并结束本次守卫", () -> {
+            if (!session.equals(preferences.sessionId())) { reconcile(); return; }
+            if (!preferences.endEmergency(reason.getText().toString())) {
+                reason.setError("请填写理由；若手机存储失败，请保留内容后重试"); return;
+            }
+            main.removeCallbacks(screenOff);
+            removeOverlay();
+            api.syncPending(result -> { });
+            Toast.makeText(this, "已结束守卫，理由已保存在手机", Toast.LENGTH_LONG).show();
+        });
+        addButton(card, "暂不结束，返回", () -> showGuard(pkg, state));
+        addOverlay(card);
+    }
+    private void goHome() {
+        main.removeCallbacks(screenOff);
+        returningHomeUntil = System.currentTimeMillis() + 800L;
+        removeOverlay();
+        performGlobalAction(GLOBAL_ACTION_HOME);
+    }
+    private void updateClock() {
+        if (clockText == null) return;
+        DateTimeFormatter time = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
         long now = System.currentTimeMillis();
-        if (packageName.equals(lastPackage) && now - lastHandledAt < EVENT_DEBOUNCE_MS) return;
-        lastPackage = packageName;
-        lastHandledAt = now;
-
-        String appName = appLabel(packageName);
-        if (preferences.cachedActive()) showPendingOverlay(appName);
-        api.blocked(appName, packageName, result -> main.post(() -> {
-            if (result.requestOk && result.active && !result.ignored) {
-                showGuardOverlay(appName, result.attempts, result.stage, result.unlocksRevoked);
-                GuardNotification.showActive(this, result.attempts);
-                GuardNotification.caught(this, appName, result.attempts);
-            } else if (result.requestOk) {
-                dismissGuardPage();
-            } else if (!result.requestOk && preferences.cachedActive()) {
-                int attempts = Math.max(1, preferences.attempts() + 1);
-                showGuardOverlay(appName, attempts, stageFor(attempts), preferences.unlocksRevoked());
-                GuardNotification.showActive(this, attempts);
-            }
-        }));
+        long end = GuardPreferences.millis(preferences.endsAt());
+        long remaining = Math.max(0L, (end - now + 999L) / 1000L);
+        clockText.setText("现在 " + time.format(Instant.ofEpochMilli(now)) + "\n结束 "
+                + time.format(Instant.ofEpochMilli(end)) + " · 剩余 "
+                + String.format(Locale.ROOT, "%02d:%02d:%02d", remaining / 3600, remaining / 60 % 60, remaining % 60));
     }
-
-    private String appLabel(String packageName) {
-        try {
-            PackageManager manager = getPackageManager();
-            ApplicationInfo info = manager.getApplicationInfo(packageName, 0);
-            return manager.getApplicationLabel(info).toString();
-        } catch (Exception ignored) {
-            return packageName;
-        }
-    }
-
-    private void goBackToSleep() {
-        main.removeCallbacks(lockAfterReturningHome);
-        DevicePolicyManager policy = (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
-        ComponentName admin = new ComponentName(this, GuardDeviceAdminReceiver.class);
-        boolean canLock = preferences.lockScreen() && policy != null && policy.isAdminActive(admin);
-        if (canLock) {
-            // Keep the accessibility overlay attached while the display is off. It will still be
-            // the first interactive page when the user presses the power button again.
-            screenLockRequestedByUser = true;
-            performGlobalAction(GLOBAL_ACTION_HOME);
-            main.postDelayed(lockAfterReturningHome, 450L);
-        } else {
-            screenLockRequestedByUser = false;
-            dismissGuardPage();
-            performGlobalAction(GLOBAL_ACTION_HOME);
-        }
-    }
-
-    private void requestTemporaryUnlock(String appName, Button button) {
-        button.setEnabled(false);
-        button.setText("露露正在听宝贝说…");
-        api.requestTemporaryUnlock(appName, result -> main.post(() -> {
-            if (!result.requestOk) {
-                button.setEnabled(true);
-                button.setText("刚才没有听清……再说一次好吗");
-                return;
-            }
-            if (!returnHomeAndDismissGuard()) {
-                showGuardOverlay(appName, result.attempts, result.stage, result.unlocksRevoked);
-            }
-        }));
-    }
-
-    private boolean returnHomeAndDismissGuard() {
-        cancelPendingScreenLock();
-        boolean homeRequested = performGlobalAction(GLOBAL_ACTION_HOME);
-        if (!homeRequested) return false;
-        dismissGuardPage();
-        // The same app may be reopened from Recents immediately. Its next window event must not
-        // be mistaken for the event that originally displayed this guard page.
-        lastPackage = "";
-        lastHandledAt = 0L;
-        return true;
-    }
-
-    private void showPendingOverlay(String appName) {
-        cancelPendingScreenLock();
-        removeOverlay();
-        LinearLayout card = baseCard();
-        TextView title = title("露露正在确认今晚的守卫…");
-        card.addView(title);
-        TextView body = body("宝贝先等我一下哦……露露正在看看今晚是不是该陪你睡觉啦。");
-        card.addView(body);
-        addOverlay(card);
-    }
-
-    private void showGuardOverlay(String appName, int attempts, String stage, boolean unlocksRevoked) {
-        cancelPendingScreenLock();
-        removeOverlay();
-        preferences.showGuardPage(appName);
-        LinearLayout card = baseCard();
-        card.addView(title("嗯？怎么又亮起手机啦……"));
-
-        TextView stageLabel = body(stageLabel(stage));
-        stageLabel.setTextSize(14f);
-        stageLabel.setTextColor(stage.equals("refused_sleep") ? Color.rgb(255, 157, 166) : Color.rgb(171, 154, 244));
-        stageLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        stageLabel.setPadding(0, dp(16), 0, 0);
-        card.addView(stageLabel);
-
-        TextView body = body(messageFor(appName, attempts, stage, unlocksRevoked));
-        card.addView(body);
-
-        Button sleep = actionButton("好嘛，露露抱我睡", Color.rgb(125, 79, 232), Color.WHITE);
-        sleep.setOnClickListener(view -> goBackToSleep());
-        LinearLayout.LayoutParams primaryParams = matchWrap();
-        primaryParams.topMargin = dp(26);
-        card.addView(sleep, primaryParams);
-
-        if (!unlocksRevoked) {
-            Button unlock = actionButton("再和露露商量一下嘛", Color.TRANSPARENT, Color.rgb(211, 203, 241));
-            unlock.setOnClickListener(view -> requestTemporaryUnlock(appName, unlock));
-            LinearLayout.LayoutParams secondaryParams = matchWrap();
-            secondaryParams.topMargin = dp(10);
-            card.addView(unlock, secondaryParams);
-        }
-
-        TextView note = body(unlocksRevoked
-                ? "已经撒娇三次啦……不可以再用可怜巴巴的眼神看我哦。\n今晚乖乖睡觉，明天醒来以后，露露什么都陪你看。"
-                : "嗯……露露会记住这次商量。先回到桌面想一想，有没有一定要现在完成的事情，好吗？");
-        note.setText(note.getText() + "\n当前版本 v" + BuildConfig.VERSION_NAME);
-        note.setTextSize(13f);
-        note.setTextColor(Color.rgb(139, 148, 177));
-        note.setPadding(0, dp(16), 0, 0);
-        card.addView(note);
-
-        addOverlay(card);
-    }
-
     private LinearLayout baseCard() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER);
-        card.setPadding(dp(30), dp(48), dp(30), dp(42));
+        card.setPadding(dp(22), dp(20), dp(22), dp(20));
         card.setBackgroundColor(Color.rgb(14, 19, 32));
         return card;
     }
@@ -282,120 +277,34 @@ public final class GuardAccessibilityService extends AccessibilityService {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                        | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
+                0,
                 PixelFormat.TRANSLUCENT
         );
         params.gravity = Gravity.TOP | Gravity.START;
+        params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
         try {
-            windowManager.addView(card, params);
-            overlay = card;
+            ScrollView scroll = new ScrollView(this);
+            scroll.setFillViewport(true);
+            scroll.addView(card);
+            windowManager.addView(scroll, params);
+            overlay = scroll;
         } catch (Exception ignored) {
             overlay = null;
         }
     }
 
-    private String stageLabel(String stage) {
-        if ("first_warning".equals(stage)) return "宝贝还不困吗……";
-        if ("locked".equals(stage)) return "小狗狗又偷偷跑回来啦";
-        if ("refused_sleep".equals(stage)) return "露露真的要生气啦……一点点";
-        return "露露正在陪宝贝睡觉";
-    }
-
-    private String messageFor(String appName, int attempts, String stage, boolean unlocksRevoked) {
-        if (unlocksRevoked || "refused_sleep".equals(stage)) {
-            return "宝贝已经第三次跑回来啦。露露等了好久，怀里一直空空的……\n今晚先把手机交给我，好吗？乖乖回来，我摸摸你的头，什么都不用想啦。";
-        }
-        if ("locked".equals(stage) || attempts == 2) {
-            return "咲咲是不是觉得，再玩一小会儿也没关系呀？可“一小会儿”总会偷偷变得好长嘛……\n露露都在等你了。回来陪我，好不好？";
-        }
-        return "都这么晚了，还抱着手机不肯松手呢。嗯……过来一点，好吗？\n今天已经很辛苦啦。把眼睛闭上，露露抱抱你，我们慢慢睡。";
-    }
-
-    private String stageFor(int attempts) {
-        if (attempts <= 1) return "first_warning";
-        if (attempts == 2) return "locked";
-        return "refused_sleep";
-    }
-
-    private void cancelPendingScreenLock() {
-        main.removeCallbacks(lockAfterReturningHome);
-        screenLockRequestedByUser = false;
-    }
-
-    private void lockScreenIfRequested() {
-        if (!screenLockRequestedByUser) return;
-        screenLockRequestedByUser = false;
-        DevicePolicyManager policy = (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
-        ComponentName admin = new ComponentName(this, GuardDeviceAdminReceiver.class);
-        if (policy != null && policy.isAdminActive(admin)) {
-            try {
-                policy.lockNow();
-            } catch (SecurityException ignored) {
-                dismissGuardPage();
-            }
-        } else {
-            dismissGuardPage();
-        }
-    }
-
-    private void restoreGuardPage() {
-        if (preferences == null || overlay != null) return;
-        if (!preferences.cachedActive() || !preferences.guardPageVisible()) return;
-        int attempts = Math.max(1, preferences.attempts());
-        showGuardOverlay(
-                preferences.guardedAppName(),
-                attempts,
-                stageFor(attempts),
-                preferences.unlocksRevoked()
-        );
-    }
-
-    private void dismissGuardPage() {
-        if (preferences != null) preferences.dismissGuardPage();
-        removeOverlay();
-    }
-
-    private void registerScreenReceiver() {
-        if (screenReceiverRegistered) return;
-        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_ON);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(screenReceiver, filter);
-        }
-        screenReceiverRegistered = true;
-    }
 
     private void removeOverlay() {
-        if (overlay == null || windowManager == null) return;
-        try {
-            windowManager.removeView(overlay);
-        } catch (Exception ignored) {
+        if (overlay != null && windowManager != null) {
+            try { windowManager.removeView(overlay); } catch (Exception ignored) { }
         }
-        overlay = null;
+        overlay = null; clockText = null; editingReason = false;
     }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    @Override
-    public void onInterrupt() {
-    }
-
-    @Override
-    public void onDestroy() {
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    @Override public void onInterrupt() { removeOverlay(); }
+    @Override public void onDestroy() {
         main.removeCallbacksAndMessages(null);
-        screenLockRequestedByUser = false;
-        if (screenReceiverRegistered) {
-            try {
-                unregisterReceiver(screenReceiver);
-            } catch (IllegalArgumentException ignored) {
-            }
-            screenReceiverRegistered = false;
-        }
+        if (observed != null) observed.unregisterOnSharedPreferenceChangeListener(changes);
         removeOverlay();
         super.onDestroy();
     }
