@@ -284,7 +284,25 @@ public final class MainActivity extends Activity {
                 toast("操作失败：" + result.error);
             }
         });
-        if (start) api.start(callback); else api.stop(callback);
+        if (start) api.start(callback);
+        else if (!preferences.cachedActive()) toast("现在没有正在进行的守卫");
+        else {
+            EditText reason = input("请输入提前结束的理由（最多200字）", InputType.TYPE_CLASS_TEXT);
+            reason.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});
+            android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this)
+                    .setTitle("填写理由，提前结束守卫").setView(reason)
+                    .setNegativeButton("取消", null).setPositiveButton("记录并结束", null).create();
+            dialog.setOnShowListener(ignored -> dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                if (!preferences.endEmergency(reason.getText().toString())) {
+                    reason.setError("请填写理由；本地保存失败时请重试"); return;
+                }
+                dialog.dismiss();
+                renderCachedStatus();
+                api.syncPending(result -> { });
+                toast("已结束，理由已保存在手机");
+            }));
+            dialog.show();
+        }
     }
 
     private boolean accessibilityEnabled() {
