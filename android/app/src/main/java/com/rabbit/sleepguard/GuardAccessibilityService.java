@@ -103,6 +103,7 @@ public final class GuardAccessibilityService extends AccessibilityService {
         String selected = "";
         int topLayer = Integer.MIN_VALUE;
         for (AccessibilityWindowInfo window : getWindows()) {
+            if (window.isFocused() && window.getType() == AccessibilityWindowInfo.TYPE_SYSTEM) return "com.android.systemui";
             if (window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) continue;
             AccessibilityNodeInfo root = window.getRoot();
             if (root == null) continue;
@@ -193,7 +194,7 @@ public final class GuardAccessibilityService extends AccessibilityService {
         reason.setFilters(new InputFilter[]{new InputFilter.LengthFilter(200)});
         card.addView(reason, matchWrap());
         addButton(card, "记录理由并结束本次守卫", () -> {
-            if (!session.equals(preferences.sessionId())) { reconcile(); return; }
+            if (!session.equals(preferences.sessionId())) { editingReason = false; reconcile(); return; }
             if (!preferences.endEmergency(reason.getText().toString())) {
                 reason.setError("请填写理由；若手机存储失败，请保留内容后重试"); return;
             }

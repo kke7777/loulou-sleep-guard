@@ -74,6 +74,16 @@ public class GuardAccessibilityServiceTest {
         Shadows.shadowOf(power).setIsInteractive(true); check();
         assertNotNull(overlay()); assertEquals(1, prefs.attempts());
     }
+    @Test public void systemPanelDoesNotTrapUserOrCreateAnotherVisit() {
+        window("test.browser"); check(); assertNotNull(overlay());
+        AccessibilityWindowInfo panel = AccessibilityWindowInfo.obtain();
+        Shadows.shadowOf(panel).setType(AccessibilityWindowInfo.TYPE_SYSTEM);
+        Shadows.shadowOf(panel).setFocused(true);
+        Shadows.shadowOf(service).setWindows(List.of(panel));
+        check(); assertNull(overlay());
+        window("test.browser"); check();
+        assertNotNull(overlay()); assertEquals(1, prefs.attempts());
+    }
     @Test public void expiryRemovesExistingOverlayWithoutClick() throws Exception {
         window("test.browser"); check(); assertNotNull(overlay());
         prefs.applySnapshot(state.put("revision", 2).put("ends_at", "2000-01-01T00:00:00Z"));
